@@ -1,0 +1,125 @@
+name: C# Project Readiness & Structure Check
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  evaluate-project:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Automated Project Check
+        id: check
+        shell: python
+        run: |
+          import os, glob, re, subprocess
+
+          score = 0.0
+          report = []
+
+          def add_result(passed, pts, title, detail):
+              global score
+              if passed:
+                  score += pts
+                  report.append(f"| ✅ | **{title}** | +{pts:.1f} | {detail} |")
+              else:
+                  report.append(f"| ❌ | **{title}** | 0.0 / {pts:.1f} | {detail} |")
+
+          # 1. Check C# project/solution & source files inside src/ (1.0 pt)
+          sln_or_csproj = glob.glob("src/**/*.sln", recursive=True) + glob.glob("src/**/*.csproj", recursive=True)
+          cs_files = [f for f in glob.glob("src/**/*.cs", recursive=True) if "obj/" not in f and "bin/" not in f]
+          has_src = len(sln_or_csproj) > 0 and len(cs_files) > 0
+          add_result(
+              has_src, 1.0,
+              "ملفات مشروع C# داخل src/",
+              f"تم العثور على {len(sln_or_csproj)} ملف مشروع/حل و {len(cs_files)} ملف .cs" if has_src else "يجب وضع مجلد مشروع Visual Studio (.sln / .csproj / .cs) داخل مجلد src/"
+          )
+
+          # 2. Check repository cleanliness (no bin/ or obj/ tracked) (0.5 pt)
+          tracked_files = subprocess.check_output(["git", "ls-files"]).decode("utf-8").splitlines()
+          build_artifacts = [f for f in tracked_files if "/bin/" in f or "/obj/" in f or f.startswith("bin/") or f.startswith("obj/")]
+          clean_repo = len(build_artifacts) == 0
+          add_result(
+              clean_repo, 0.5,
+              "نظافة المستودع (.gitignore)",
+              "لا توجد مجلدات bin/ أو obj/ مرفوعة" if clean_repo else f"يوجد {len(build_artifacts)} ملف من مجلدات bin/ أو obj/ يجب حذفها"
+          )
+
+          # 3. Check database SQL script inside database/ (1.0 pt)
+          sql_files = glob.glob("database/**/*.sql", recursive=True)
+          sql_valid = False
+          for sf in sql_files:
+              content = open(sf, encoding="utf-8", errors="ignore").read().upper()
+              if "CREATE TABLE" in content and ("INSERT" in content or "SELECT" in content):
+                  sql_valid = True
+                  break
+          add_result(
+              sql_valid, 1.0,
+              "ملف قاعدة البيانات (database/*.sql)",
+              f"تم العثور على سكربت SQL صالح ({', '.join(sql_files)})" if sql_valid else "يجب إضافة ملف .sql داخل مجلد database/ يحتوي على CREATE TABLE و INSERT"
+          )
+
+          # 4. Check C# code features: DB connection, OOP class, try-catch (0.5 pt)
+          all_cs_code = "\n".join(open(f, encoding="utf-8", errors="ignore").read() for f in cs_files)
+          has_db = bool(re.search(r"(OleDbConnection|SqlConnection|MySqlConnection)", all_cs_code))
+          has_try = "try" in all_cs_code and "catch" in all_cs_code
+          classes = re.findall(r"\bclass\s+([A-Za-z0-9_]+)", all_cs_code)
+          custom_classes = [c for c in classes if c not in ("Program", "Form1")]
+          code_ok = has_src and has_db and has_try and len(custom_classes) >= 1
+          details_code = []
+          details_code.append("DB: ✅" if has_db else "DB: ❌ (لا يوجد اتصال قاعدة بيانات)")
+          details_code.append("try-catch: ✅" if has_try else "try-catch: ❌")
+          details_code.append(f"OOP Classes: {len(custom_classes)} ✅" if custom_classes else "OOP Classes: ❌ (أضف كلاس مستقل)")
+          add_result(
+              code_ok, 0.5,
+              "فحص مبدئي للكود (ADO.NET + OOP + try-catch)",
+              " | ".join(details_code)
+          )
+
+          # 5. Check README.md completion & Screenshots (0.5 pt)
+          readme_text = open("README.md", encoding="utf-8", errors="ignore").read() if os.path.exists("README.md") else ""
+          readme_edited = "اكتب اسم" not in readme_text and "44XXXXXXX" not in readme_text and len(readme_text.strip()) > 200
+          imgs = []
+          for ext in ("*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG"):
+              imgs.extend(glob.glob(f"screenshots/**/{ext}", recursive=True))
+          docs_ok = readme_edited and len(imgs) >= 1
+          add_result(
+              docs_ok, 0.5,
+              "التوثيق (README.md) ولقطات الشاشة (screenshots/)",
+              f"README محدّث + {len(imgs)} صور توضيحية" if docs_ok else "حدّث بيانات الفريق في README.md وأضف صورة واحدة على الأقل في screenshots/"
+          )
+
+          # 6. Check Commit History progression (0.5 pt)
+          commit_count = int(subprocess.check_output(["git", "rev-list", "--count", "HEAD"]).decode("utf-8").strip())
+          commits_ok = commit_count >= 3
+          add_result(
+              commits_ok, 0.5,
+              "تدرج العمل (Commit History)",
+              f"عدد الـ Commits: {commit_count}" if commits_ok else f"عدد الـ Commits الحالي ({commit_count}) قليل؛ يُشترط 3 Commits على الأقل لإثبات تدرج العمل"
+          )
+
+          summary_md = f"""## 📊 تقرير الفحص الآلي لمشروع البرمجة 2 (C#.NET)
+
+          **الدرجة الآلية المبدئية لهيكل التسليم:** `{score:.1f} / 4.0`
+
+          | الحالة | المعيار | الدرجة | التفاصيل |
+          | :---: | :--- | :---: | :--- |
+          """ + "\n".join(report) + """
+
+          > **ملاحظة:** هذه الدرجة خاصة باكتمال ملفات المستودع والتسليم فقط، وتُستكمل بقية الـ **20 درجة** (16 درجة) عند فحص الكود وتشغيل قاعدة البيانات والمناقشة.
+          """
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write(summary_md)
+
+          print(summary_md)
+          if score < 4.0:
+              raise SystemExit("المشروع غير مكتمل المتطلبات الهيكلية بعد — راجع التقرير أعلاه.")
